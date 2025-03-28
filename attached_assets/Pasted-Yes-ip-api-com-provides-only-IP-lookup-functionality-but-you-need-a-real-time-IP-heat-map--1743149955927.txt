@@ -1,0 +1,186 @@
+Yes, **ip-api.com** provides only IP lookup functionality, but you need a **real-time IP heat map** for your **self-hosted WAF**.  
+
+### **🔹 Steps to Build a Real-Time IP Heat Map for Your WAF**
+We will **extract IPs from WAF logs**, **map them to geolocation**, and **visualize them dynamically**.
+
+---
+
+## **1️⃣ Collect IPs from WAF Logs**
+### **Extracting IPs from Log Files**
+If your WAF logs requests (like Safeline, Nginx WAF, or ModSecurity), extract IPs:
+
+```bash
+cat /var/log/waf/access.log | awk '{print $1}' | sort | uniq -c | sort -nr > ip_list.txt
+```
+
+Example log format:
+```
+192.168.1.10 - - [20/Feb/2025:12:34:56 +0000] "GET /wp-login.php HTTP/1.1" 403
+45.76.23.12 - - [20/Feb/2025:12:35:00 +0000] "POST /admin HTTP/1.1" 401
+```
+
+---
+
+## **2️⃣ Convert IPs to Geolocation**
+Since you want **self-hosted** IP geolocation, use **MaxMind GeoLite2** (free) instead of an online API.
+
+### **Install MaxMind GeoLite2 Locally**
+```bash
+mkdir -p /usr/local/share/GeoIP
+cd /usr/local/share/GeoIP
+wget https://geolite.maxmind.com/download/geoip/database/GeoLite2-City.tar.gz
+tar -xvf GeoLite2-City.tar.gz
+```
+
+### **Install Python GeoIP Library**
+```bash
+pip install geoip2 pandas folium flask
+```
+
+### **Extract Lat/Lon from IPs**
+Create a script (`geo_lookup.py`) to map WAF IPs to **latitude/longitude**:
+
+```python
+import geoip2.database
+import pandas as pd
+
+# Load MaxMind Database
+reader = geoip2.database.Reader('/usr/local/share/GeoIP/GeoLite2-City.mmdb')
+
+# Read IP list
+with open("ip_list.txt") as f:
+    lines = f.readlines()
+
+# Extract IPs & map to geolocation
+ip_data = []
+for line in lines:
+    count, ip = line.strip().split()
+    try:
+        response = reader.city(ip)
+        ip_data.append([
+            ip,
+            response.location.latitude,
+            response.location.longitude,
+            count
+        ])
+    except:
+        pass
+
+# Save to CSV
+df = pd.DataFrame(ip_data, columns=["IP", "Latitude", "Longitude", "Count"])
+df.to_csv("geo_ips.csv", index=False)
+print("IP geolocation mapping done!")
+```
+Run:
+```bash
+python geo_lookup.py
+```
+
+---
+
+## **3️⃣ Generate an IP Heat Map**
+Now, create a **real-time heat map** using **Folium**:
+
+### **Create `heatmap.py`**
+```python
+import folium
+import pandas as pd
+from folium.plugins import HeatMap
+
+# Load Geolocation Data
+data = pd.read_csv("geo_ips.csv")
+
+# Create Map
+m = folium.Map(location=[20, 0], zoom_start=2)
+
+# Add HeatMap
+heat_data = list(zip(data["Latitude"], data["Longitude"], data["Count"]))
+HeatMap(heat_data).add_to(m)
+
+# Save Map
+m.save("heatmap.html")
+print("Heatmap generated: heatmap.html")
+```
+
+Run:
+```bash
+python heatmap.py
+```
+✅ **Open `heatmap.html` in a browser** – You will see an IP heat map!
+
+---
+
+## **4️⃣ Real-Time Heat Map in Web UI**
+For live updates, use **Flask + JavaScript**.
+
+### **Create `server.py`**
+```python
+from flask import Flask, render_template
+import pandas as pd
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    data = pd.read_csv("geo_ips.csv")
+    heat_data = list(zip(data["Latitude"], data["Longitude"], data["Count"]))
+    return render_template("map.html", heat_data=heat_data)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+```
+
+### **Create `templates/map.html`**
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WAF Attack Heatmap</title>
+    <script src="https://unpkg.com/leaflet"></script>
+    <script src="https://unpkg.com/leaflet.heat"></script>
+    <style>
+        #map { height: 600px; width: 100%; }
+    </style>
+</head>
+<body>
+    <h2>Live WAF Attack Heatmap</h2>
+    <div id="map"></div>
+
+    <script>
+        var map = L.map('map').setView([20, 0], 2);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(map);
+        
+        var heat = L.heatLayer({{ heat_data | tojson }}, { radius: 20 }).addTo(map);
+    </script>
+</body>
+</html>
+```
+
+Run:
+```bash
+python server.py
+```
+Open **`http://yourserverip:5000`** to see a live heat map! 🚀
+
+---
+
+## **5️⃣ Automate for Continuous Updates**
+- **Run every 5 minutes** using `cron`:
+```bash
+crontab -e
+```
+Add:
+```
+*/5 * * * * python3 /path/to/geo_lookup.py && python3 /path/to/heatmap.py
+```
+This will **update the map every 5 minutes**.
+
+---
+
+## **🔥 Final Summary**
+✅ **Self-hosted solution (no external API needed!)**  
+✅ **Live heat map updates with Flask + JavaScript**  
+✅ **Works with WAF logs from any source**  
+✅ **Can be integrated into SIEM (Wazuh, ELK, Grafana)**  
+
+Let me know if you need **Grafana integration** or **SIEM automation**! 🚀
